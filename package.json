@@ -1,0 +1,27 @@
+{
+  "name": "dsh-connect-baiducomate",
+  "version": "1.0.0",
+  "private": true,
+  "description": "OpenAI-compatible bridge that connects DeepSeek Harness (dsh) to a Baidu Comate private deployment.",
+  "main": "comate-shim.js",
+  "scripts": {
+    "start": "node comate-shim.js",
+    "check": "node scripts/check.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/FreshFeel1ng/dsh-connect-baiducomate.git"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "comate",
+    "baidu",
+    "openai-compatible",
+    "shim"
+  ]
+}

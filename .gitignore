@@ -1,0 +1,19 @@
+# Local configuration and credentials
+config.json
+config.local.json
+
+# Persisted Comate conversation/task mapping
+sessions.json
+sessions.json.*.tmp
+
+# Dependencies and logs
+node_modules/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
