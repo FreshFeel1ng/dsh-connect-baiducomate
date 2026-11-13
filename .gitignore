@@ -12,6 +12,11 @@ node_modules/
 npm-debug.log*
 pnpm-debug.log*
 
+# Local launcher binary (build it with build-launcher.ps1)
+start-shim.exe
+shim.log
+shim.err.log
+
 # Editor / OS noise
 .DS_Store
 Thumbs.db

@@ -122,6 +122,26 @@ node comate-shim.js
 {"event":"models.loaded","count":15}
 ```
 
+#### Windows 一键启动（可选）
+
+项目自带一个 C# 启动器，可以双击运行：
+
+```powershell
+# 首次使用，先编译出 start-shim.exe
+powershell -ExecutionPolicy Bypass -File .\build-launcher.ps1
+```
+
+之后直接双击 `start-shim.exe`。它会：
+
+1. 检查 `8790` 是否已被占用，已运行则弹窗提示
+2. 自动在 `PATH` 或常见安装目录中查找 `node.exe`
+3. 打开一个新的控制台窗口运行 shim，并保留窗口方便查看日志
+4. shim 退出后窗口不会立即关闭，方便查看错误
+
+把 `start-shim.exe` 的快捷方式放进 `shell:startup`（Win+R 输入）即可开机自动启动。
+
+启动器只是调用本机的 Node，仍需先安装 Node.js 20+。`.exe` 已被 `.gitignore` 忽略，源码在 `launcher/start-shim.cs`。
+
 ### 5. 验证
 
 ```bash
@@ -507,6 +527,10 @@ Comate 调用了 dsh 没有的工具。模型会根据错误自行调整；也�
 .
 ├── comate-shim.js          # 入口：装配与启动
 ├── config.example.json     # 配置模板
+├── build-launcher.ps1      # 编译 Windows 启动器
+├── launcher/
+│   └── start-shim.cs       # 启动器源码
+├── start-shim.exe          # 本地生成，已被 gitignore
 ├── package.json
 ├── scripts/
 │   └── check.js            # 语法检查
