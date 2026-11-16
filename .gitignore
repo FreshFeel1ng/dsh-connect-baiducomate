@@ -21,6 +21,9 @@ start-shim.exe
 shim.log
 shim.err.log
 
+# Release artifact produced by `npm pack`
+*.tgz
+
 # Editor / OS noise
 .DS_Store
 Thumbs.db

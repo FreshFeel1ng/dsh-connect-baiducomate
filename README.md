@@ -62,9 +62,90 @@ dsh plugin --profile desktop add D:\path\to\dsh-connect-baiducomate
 
 # 或从 git 安装（需要 lib/ 已提交；本仓库不生成构建产物）
 dsh plugin --profile desktop add github:FreshFeel1ng/dsh-connect-baiducomate
+
+# 或从 Release 里下载的离线包安装（见下一节）
+dsh plugin --profile desktop add D:\tools\dsh-connect-baiducomate-1.3.0.tgz
 ```
 
 安装后 `dsh.profile.bundles` 会多出 `dsh-connect-baiducomate`，它的 `cordis.patch.yml` 插入一行 `comate` 插件。
+
+### 从 Release 离线包安装（推荐给同事）
+
+`dsh plugin add` 的参数直接转给 pnpm，所以除了 git 和本地目录，也能装一个打包好的 `.tgz`。这条路不需要对方会 `git`，也不需要能连 GitHub。
+
+**1. 下载**
+
+打开 [Releases](https://github.com/FreshFeel1ng/dsh-connect-baiducomate/releases/latest)，下载 `dsh-connect-baiducomate-<version>.tgz`（约 60 KB，纯源码，没有依赖也没有构建产物）。
+
+**2. 校验**
+
+Release 说明里给了 SHA256。对一下，确认拿到的包就是仓库里那份代码：
+
+```powershell
+(Get-FileHash .\dsh-connect-baiducomate-1.3.0.tgz -Algorithm SHA256).Hash
+```
+
+```bash
+shasum -a 256 dsh-connect-baiducomate-1.3.0.tgz
+```
+
+> 这个包是**字节可复现**的：同一个提交在任意机器上 `npm pack` 出同样的 SHA256，所以哈希对得上就等于代码对得上。
+
+**3. 安装**
+
+```bash
+dsh plugin --profile desktop add D:\tools\dsh-connect-baiducomate-1.3.0.tgz
+```
+
+**4. 别删这个 tgz，也别放在临时目录**
+
+`pnpm` 把它记成 `file:` 绝对路径：
+
+```json
+"dsh-connect-baiducomate": "file:D:/tools/dsh-connect-baiducomate-1.3.0.tgz"
+```
+
+装完之后代码已经解包进 `node_modules`，**删掉 tgz 也照样能用**；但之后再动这个 profile 的插件就会失败：
+
+```
+pnpm: ENOENT: no such file or directory, open '...\dsh-connect-baiducomate-1.3.0.tgz'
+```
+
+所以放在一个不会被清理的位置（`D:\tools\`、`~\plugins\`），不要用 `%TEMP%`。真的删了也不慌，一条命令就能解套：
+
+```bash
+dsh plugin --profile desktop remove dsh-connect-baiducomate
+```
+
+它会连 `dsh.profile.bundles` 一起清干净，然后重新装一次即可。
+
+**5. 配置并验证**
+
+装完重启 dsh，按上面「配置」一节在 设置 → 插件 里填 `apiHost` 和 `license`。`apiHost` / `license` 不在包里，也不该在包里——每个人的 Comate 部署地址和账号都不一样，向自己的管理员索取即可。
+
+```bash
+dsh --profile desktop --dump-config   # 应能看到 # == dsh-connect-baiducomate 和 - id: comate
+```
+
+**升级与卸载**
+
+```bash
+# 升级：下载新版本后重装一次（同一条命令换文件名）
+dsh plugin --profile desktop add D:\tools\dsh-connect-baiducomate-<new-version>.tgz
+
+# 卸载
+dsh plugin --profile desktop remove dsh-connect-baiducomate
+```
+
+**维护者发布流程**（自己留档用）：
+
+```bash
+npm test && npm run check
+npm pack                                    # 产出 dsh-connect-baiducomate-<version>.tgz
+shasum -a 256 dsh-connect-baiducomate-*.tgz # 把哈希写进 Release 说明
+git tag v<version> && git push origin v<version>
+# 在 GitHub 上以该 tag 建 Release，附上 tgz
+```
 
 ### 配置（在 dsh 界面里填，推荐）
 

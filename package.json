@@ -18,6 +18,7 @@
     "config.example.json",
     "cordis.patch.yml",
     "launcher",
+    "build-launcher.ps1",
     "scripts",
     "README.md",
     "LICENSE"
