@@ -83,6 +83,48 @@ test('emitted tool-call arguments carry the array, not a string', () => {
   assert.deepEqual(parsed.questions, questions);
 });
 
+const GREP_SCHEMA = {
+  type: 'object',
+  properties: {
+    pattern: { type: 'string' },
+    path: { type: 'string' },
+    include: { type: 'string' },
+  },
+};
+
+function grepInput(input) {
+  return sanitizeInput('grep', input, schemasFor('grep', GREP_SCHEMA), config);
+}
+
+test('drops a negated grep include instead of forwarding a rejected call', () => {
+  // dsh's grep: "include must be a positive glob filter; negated patterns
+  // ("!…") are not supported". Comate sends ripgrep-style exclusions.
+  const out = grepInput({ pattern: 'main', include: '!**/node_modules/**' });
+  assert.equal('include' in out, false);
+  assert.equal(out.pattern, 'main');
+});
+
+test('drops a negated include that arrived through the glob alias', () => {
+  const out = grepInput({ pattern: 'main', glob: '!**/dist/**' });
+  assert.equal('include' in out, false);
+});
+
+test('converts a comma list into one brace alternation', () => {
+  assert.equal(grepInput({ pattern: 'x', include: '*.ts,*.tsx' }).include, '{*.ts,*.tsx}');
+  // A comma inside a brace group is already one glob.
+  assert.equal(grepInput({ pattern: 'x', include: '*.{ts,tsx}' }).include, '*.{ts,tsx}');
+});
+
+test('keeps the positive members of an array and drops the negations', () => {
+  const out = grepInput({ pattern: 'x', include: ['**/*.py', '!**/venv/**'] });
+  assert.equal(out.include, '**/*.py');
+  assert.equal(grepInput({ pattern: 'x', include: ['**/*.py', '**/*.pyi'] }).include, '{**/*.py,**/*.pyi}');
+});
+
+test('leaves a plain positive include untouched', () => {
+  assert.equal(grepInput({ pattern: 'x', include: '**/*.mjs' }).include, '**/*.mjs');
+});
+
 const CATALOG_CONFIG = {
   argumentAliases: {},
   toolMap: DEFAULT_TOOL_MAP,

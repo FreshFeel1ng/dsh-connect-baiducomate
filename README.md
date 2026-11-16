@@ -646,6 +646,7 @@ Comate 服务端工具 → dsh 工具：
 
 - `target_directory` → `path`
 - `query` → `pattern`
+- `glob` / `file_pattern` → `include`，并且 `include` 会被规范成 dsh 能接受的**单个正向 glob**：以 `!` 开头的排除模式直接丢弃（dsh 的 `grep` 没有排除参数，交给 ripgrep 自带的 ignore 规则），`a,b` 这类逗号列表改写成 `{a,b}` 交替式，数组取其中正向的那些
 - `offset` / `limit` 字符串 → 数字
 - `cmd` → `command`
 - 嵌套数组/对象被写成 JSON 字符串时（Comate 按文本流式产出参数，例如 `questions: "[{...}]"`），按 schema 解析回真正的数组/对象；解析失败则原样转发，让 dsh 报出明确错误

@@ -157,6 +157,45 @@ function coerceValue(value, property) {
 }
 
 /**
+ * Split on commas that are not inside a brace group, so `*.{ts,tsx}` stays one
+ * glob while `*.ts,*.tsx` comes back as two.
+ */
+function splitTopLevelCommas(text) {
+  const parts = [];
+  let depth = 0;
+  let current = '';
+  for (const char of text) {
+    if (char === '{') depth += 1;
+    else if (char === '}') depth = Math.max(0, depth - 1);
+    if (char === ',' && depth === 0) {
+      parts.push(current);
+      current = '';
+      continue;
+    }
+    current += char;
+  }
+  parts.push(current);
+  return parts.map((part) => part.trim()).filter(Boolean);
+}
+
+/**
+ * dsh's `grep` takes exactly ONE positive glob and rejects `!…` and top-level
+ * comma lists outright. Comate's search tools speak the ripgrep dialect, where
+ * both are ordinary, so translate them instead of forwarding a call that can
+ * only come back as a tool error. A negated pattern has no `grep` equivalent —
+ * dsh has no exclude parameter — so it is dropped and the search runs with
+ * ripgrep's own ignore rules, which is the closest honest meaning.
+ */
+function normalizeGrepInclude(value) {
+  const entries = (Array.isArray(value) ? value : [value])
+    .filter((entry) => typeof entry === 'string')
+    .flatMap(splitTopLevelCommas)
+    .filter((entry) => !entry.startsWith('!'));
+  if (entries.length === 0) return undefined;
+  return entries.length === 1 ? entries[0] : `{${entries.join(',')}}`;
+}
+
+/**
  * Rename known synonyms, drop undeclared keys, coerce declared scalar types,
  * then apply the few shape repairs dsh validates strictly.
  */
@@ -189,6 +228,11 @@ function sanitizeInput(name, input, schemas, config) {
   }
   if (name === 'glob' && (!result.pattern || result.pattern === '')) {
     result.pattern = '**/*';
+  }
+  if (name === 'grep' && 'include' in result) {
+    const include = normalizeGrepInclude(result.include);
+    if (include === undefined) delete result.include;
+    else result.include = include;
   }
   if ((name === 'pwsh' || name === 'bash') && !result.description && result.command) {
     result.description = String(result.command).slice(0, 60);
