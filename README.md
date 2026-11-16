@@ -64,7 +64,7 @@ dsh plugin --profile desktop add D:\path\to\dsh-connect-baiducomate
 dsh plugin --profile desktop add github:FreshFeel1ng/dsh-connect-baiducomate
 
 # 或从 Release 里下载的离线包安装（见下一节）
-dsh plugin --profile desktop add D:\tools\dsh-connect-baiducomate-1.3.0.tgz
+dsh plugin --profile desktop add D:\tools\dsh-connect-baiducomate-1.3.1.tgz
 ```
 
 安装后 `dsh.profile.bundles` 会多出 `dsh-connect-baiducomate`，它的 `cordis.patch.yml` 插入一行 `comate` 插件。
@@ -82,11 +82,11 @@ dsh plugin --profile desktop add D:\tools\dsh-connect-baiducomate-1.3.0.tgz
 Release 说明里给了 SHA256。对一下，确认拿到的包就是仓库里那份代码：
 
 ```powershell
-(Get-FileHash .\dsh-connect-baiducomate-1.3.0.tgz -Algorithm SHA256).Hash
+(Get-FileHash .\dsh-connect-baiducomate-1.3.1.tgz -Algorithm SHA256).Hash
 ```
 
 ```bash
-shasum -a 256 dsh-connect-baiducomate-1.3.0.tgz
+shasum -a 256 dsh-connect-baiducomate-1.3.1.tgz
 ```
 
 > 这个包是**字节可复现**的：同一个提交在任意机器上 `npm pack` 出同样的 SHA256，所以哈希对得上就等于代码对得上。
@@ -94,7 +94,7 @@ shasum -a 256 dsh-connect-baiducomate-1.3.0.tgz
 **3. 安装**
 
 ```bash
-dsh plugin --profile desktop add D:\tools\dsh-connect-baiducomate-1.3.0.tgz
+dsh plugin --profile desktop add D:\tools\dsh-connect-baiducomate-1.3.1.tgz
 ```
 
 **4. 别删这个 tgz，也别放在临时目录**
@@ -102,13 +102,13 @@ dsh plugin --profile desktop add D:\tools\dsh-connect-baiducomate-1.3.0.tgz
 `pnpm` 把它记成 `file:` 绝对路径：
 
 ```json
-"dsh-connect-baiducomate": "file:D:/tools/dsh-connect-baiducomate-1.3.0.tgz"
+"dsh-connect-baiducomate": "file:D:/tools/dsh-connect-baiducomate-1.3.1.tgz"
 ```
 
 装完之后代码已经解包进 `node_modules`，**删掉 tgz 也照样能用**；但之后再动这个 profile 的插件就会失败：
 
 ```
-pnpm: ENOENT: no such file or directory, open '...\dsh-connect-baiducomate-1.3.0.tgz'
+pnpm: ENOENT: no such file or directory, open '...\dsh-connect-baiducomate-1.3.1.tgz'
 ```
 
 所以放在一个不会被清理的位置（`D:\tools\`、`~\plugins\`），不要用 `%TEMP%`。真的删了也不慌，一条命令就能解套：
