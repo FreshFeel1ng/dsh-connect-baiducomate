@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 
 import toolsModule from '../src/tools.js';
 
-const { sanitizeInput, buildToolCalls, DEFAULT_TOOL_MAP } = toolsModule;
+const { sanitizeInput, buildToolCalls, toolCatalogContext, toDshToolName, DEFAULT_TOOL_MAP } = toolsModule;
 
 const ASK_SCHEMA = {
   type: 'object',
@@ -82,3 +82,65 @@ test('emitted tool-call arguments carry the array, not a string', () => {
   assert.ok(Array.isArray(parsed.questions), 'arguments.questions must survive as an array');
   assert.deepEqual(parsed.questions, questions);
 });
+
+const CATALOG_CONFIG = {
+  argumentAliases: {},
+  toolMap: DEFAULT_TOOL_MAP,
+  forwardTools: true,
+  forwardAllTools: false,
+  forwardToolLimit: 20,
+};
+
+test('an unmapped Comate tool is never rewritten onto an unrelated dsh tool', () => {
+  const available = new Set(['read', 'write', 'edit', 'glob', 'grep', 'pwsh']);
+
+  assert.equal(toDshToolName('SendSlack', available, DEFAULT_TOOL_MAP), 'send_slack');
+  assert.equal(toDshToolName('ReadFile', available, DEFAULT_TOOL_MAP), 'read_file');
+  // A mapped tool that dsh does offer still wins.
+  assert.equal(toDshToolName('Glob', available, DEFAULT_TOOL_MAP), 'glob');
+  // Shell aliases keep resolving to the executor dsh actually has.
+  assert.equal(toDshToolName('RunCommand', available, DEFAULT_TOOL_MAP), 'pwsh');
+  // With no known tool list (the shim's case) the mapped name is used as-is.
+  assert.equal(toDshToolName('Grep', new Set(), DEFAULT_TOOL_MAP), 'grep');
+});
+
+test('the catalogue keeps whole schemas and stays inside its budget', () => {
+  const bulky = {
+    type: 'object',
+    properties: Object.fromEntries(
+      Array.from({ length: 80 }, (_, index) => [`field_${index}`, { type: 'string', description: 'long copy '.repeat(20) }]),
+    ),
+  };
+  const tools = Array.from({ length: 60 }, (_, index) => ({
+    type: 'function',
+    function: { name: `mcp_tool_${index}`, description: 'a tool from an MCP server', parameters: bulky },
+  }));
+  const text = toolCatalogContext(tools, { ...CATALOG_CONFIG, forwardToolLimit: 60 });
+
+  assert.ok(text.startsWith('<client_tools>'));
+  assert.ok(text.trimEnd().endsWith('</client_tools>'), 'a truncation must not leave the block open');
+  assert.ok(text.length <= 16200, `catalogue is ${text.length} chars`);
+  assert.match(text, /omitted for length/);
+  // Every schema line is still a parseable JSON document, never half of one.
+  for (const line of text.split('\n').filter((entry) => entry.trim().startsWith('input:'))) {
+    const json = line.slice(line.indexOf(':') + 1).trim();
+    JSON.parse(json);
+  }
+});
+
+test('one oversized schema degrades to a placeholder instead of a broken document', () => {
+  const huge = {
+    type: 'object',
+    properties: Object.fromEntries(
+      Array.from({ length: 400 }, (_, index) => [`k${index}`, { type: 'string', description: 'x'.repeat(40) }]),
+    ),
+  };
+  const text = toolCatalogContext(
+    [{ type: 'function', function: { name: 'mcp_huge', description: 'huge', parameters: huge } }],
+    CATALOG_CONFIG,
+  );
+  const line = text.split('\n').find((entry) => entry.trim().startsWith('input:'));
+  const parsed = JSON.parse(line.slice(line.indexOf(':') + 1).trim());
+  assert.equal(parsed.type, 'object');
+});
+

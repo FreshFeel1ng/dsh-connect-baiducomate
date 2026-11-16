@@ -12,6 +12,59 @@ const {
 
 const SUPPORTED_IMAGE_MIMES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
 
+/** Transport failures that are worth another attempt; a programmer error is not. */
+const TRANSIENT_CODES = new Set([
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'ECONNABORTED',
+  'ETIMEDOUT',
+  'EPIPE',
+  'EAI_AGAIN',
+  'ENOTFOUND',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_BODY_TIMEOUT',
+  'UND_ERR_SOCKET',
+  'UND_ERR_CLOSED',
+]);
+
+/**
+ * Abort signal that fires on the caller's cancellation or after `ms`.
+ *
+ * Every request to Comate needs one: the SDK's `fetch` waits forever by
+ * default, so a wedged deployment would hang a chat instead of failing it.
+ * @param parent - the caller's signal, when there is one.
+ * @param ms - deadline in milliseconds.
+ * @returns the derived signal plus a `done` cleanup.
+ */
+function withDeadline(parent, ms) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(1, Number(ms) || UPSTREAM_TIMEOUT_MS));
+  timer.unref?.();
+  const onAbort = () => controller.abort();
+  if (parent) {
+    if (parent.aborted) controller.abort();
+    else parent.addEventListener('abort', onAbort, { once: true });
+  }
+  return {
+    signal: controller.signal,
+    done() {
+      clearTimeout(timer);
+      parent?.removeEventListener?.('abort', onAbort);
+    },
+  };
+}
+
+/** A timed request, reported as an upstream failure rather than a bare abort. */
+function timedOut(stage, ms, parent) {
+  if (parent?.aborted) return null;
+  return new UpstreamError(`${stage} timed out after ${ms} ms`, 504);
+}
+
+function isAbortError(error) {
+  return error?.name === 'AbortError';
+}
+
 /** Failure raised while talking to the Comate backend. */
 class UpstreamError extends Error {
   constructor(message, status, body) {
@@ -56,18 +109,28 @@ class ComateClient {
   }
 
   async requestJson(pathname, body, extraHeaders, signal) {
-    const response = await fetch(`${this.config.apiHost}${pathname}`, {
-      method: 'POST',
-      headers: this.headers(extraHeaders),
-      body: JSON.stringify(body),
-      signal,
-    });
+    const deadline = withDeadline(signal, this.config.upstreamTimeoutMs);
+    let response;
+    try {
+      response = await fetch(`${this.config.apiHost}${pathname}`, {
+        method: 'POST',
+        headers: this.headers(extraHeaders),
+        body: JSON.stringify(body),
+        signal: deadline.signal,
+      });
+    } catch (error) {
+      const timeout = isAbortError(error) ? timedOut(pathname, this.config.upstreamTimeoutMs, signal) : null;
+      if (timeout) throw timeout;
+      throw error;
+    } finally {
+      deadline.done();
+    }
     const text = await response.text();
     if (!response.ok) throw upstreamError(pathname, response.status, text);
     return text ? JSON.parse(text) : {};
   }
 
-  async fetchModels(force = false) {
+  async fetchModels(force = false, signal) {
     const now = Date.now();
     if (!force && this.models.length > 0 && now - this.modelsAt < MODEL_CACHE_MS) {
       return this.models;
@@ -80,10 +143,22 @@ class ComateClient {
       zuluVersion: this.config.pluginVersion,
       source: 'plugin',
     });
-    const response = await fetch(`${this.config.apiHost}/api/v2/api/models/available?${query}`, {
-      headers: this.headers(),
-    });
-    const text = await response.text();
+    const deadline = withDeadline(signal, this.config.upstreamTimeoutMs);
+    let response;
+    let text;
+    try {
+      response = await fetch(`${this.config.apiHost}/api/v2/api/models/available?${query}`, {
+        headers: this.headers(),
+        signal: deadline.signal,
+      });
+      text = await response.text();
+    } catch (error) {
+      const timeout = isAbortError(error) ? timedOut('models', this.config.upstreamTimeoutMs, signal) : null;
+      if (timeout) throw timeout;
+      throw error;
+    } finally {
+      deadline.done();
+    }
     if (!response.ok) throw upstreamError('models', response.status, text);
     const payload = text ? JSON.parse(text) : {};
     this.models = Array.isArray(payload.data) ? payload.data : [];
@@ -91,13 +166,13 @@ class ComateClient {
     return this.models;
   }
 
-  async supportsImage(modelId) {
-    const models = await this.fetchModels().catch(() => []);
+  async supportsImage(modelId, signal) {
+    const models = await this.fetchModels(false, signal).catch(() => []);
     const entry = models.find((model) => model.modelId === modelId);
     return entry?.supportImage === true;
   }
 
-  async uploadImage(url) {
+  async uploadImage(url, signal) {
     const maxBytes = this.config.imageMaxBytes || 20 * 1024 * 1024;
     let buffer;
     let mime;
@@ -107,10 +182,25 @@ class ComateClient {
       mime = match[1];
       buffer = Buffer.from(match[2], 'base64');
     } else {
-      const response = await fetch(url);
-      if (!response.ok) throw new UpstreamError(`image fetch -> ${response.status}`, 400);
-      buffer = Buffer.from(await response.arrayBuffer());
-      mime = (response.headers.get('content-type') || 'image/png').split(';')[0];
+      // A remote image is downloaded under the same deadline as every other
+      // call, and its size is checked before the bytes are all in memory.
+      const deadline = withDeadline(signal, this.config.upstreamTimeoutMs);
+      try {
+        const response = await fetch(url, { signal: deadline.signal });
+        if (!response.ok) throw new UpstreamError(`image fetch -> ${response.status}`, 400);
+        const declared = Number(response.headers.get('content-length'));
+        if (Number.isFinite(declared) && declared > maxBytes) {
+          throw new UpstreamError(`image too large: ${declared} bytes`, 400);
+        }
+        mime = (response.headers.get('content-type') || 'image/png').split(';')[0];
+        buffer = Buffer.from(await response.arrayBuffer());
+      } catch (error) {
+        const timeout = isAbortError(error) ? timedOut('image fetch', this.config.upstreamTimeoutMs, signal) : null;
+        if (timeout) throw timeout;
+        throw error;
+      } finally {
+        deadline.done();
+      }
     }
     if (!SUPPORTED_IMAGE_MIMES.has(mime)) {
       throw new UpstreamError(`unsupported image type: ${mime}`, 400);
@@ -121,20 +211,32 @@ class ComateClient {
 
     const extension = mime.split('/')[1].replace('jpeg', 'jpg');
     const name = `image-${Date.now()}.${extension}`;
-    const response = await fetch(
-      `${this.config.apiHost}/api/aidevops/autocomate/rest/autowork/v1/file/upload`,
-      {
-        method: 'POST',
-        headers: this.headers(),
-        body: JSON.stringify({
-          fileName: name,
-          contentType: mime,
-          scene: 'Composer',
-          fileData: buffer.toString('base64'),
-        }),
-      },
-    );
-    const text = await response.text();
+    const deadline = withDeadline(signal, this.config.upstreamTimeoutMs);
+    let response;
+    let text;
+    try {
+      response = await fetch(
+        `${this.config.apiHost}/api/aidevops/autocomate/rest/autowork/v1/file/upload`,
+        {
+          method: 'POST',
+          headers: this.headers(),
+          body: JSON.stringify({
+            fileName: name,
+            contentType: mime,
+            scene: 'Composer',
+            fileData: buffer.toString('base64'),
+          }),
+          signal: deadline.signal,
+        },
+      );
+      text = await response.text();
+    } catch (error) {
+      const timeout = isAbortError(error) ? timedOut('file/upload', this.config.upstreamTimeoutMs, signal) : null;
+      if (timeout) throw timeout;
+      throw error;
+    } finally {
+      deadline.done();
+    }
     if (!response.ok) throw upstreamError('file/upload', response.status, text);
     const payload = text ? JSON.parse(text) : {};
     const id = payload?.data?.id;
@@ -142,7 +244,7 @@ class ComateClient {
     return { id, name, url };
   }
 
-  async createSession() {
+  async createSession(signal) {
     const { config } = this;
     const traceId = crypto.randomUUID();
     const conversation = await this.requestJson(
@@ -155,6 +257,7 @@ class ComateClient {
         pluginVersion: config.pluginVersion,
       },
       { 'x-trace-id': traceId },
+      signal,
     );
     const conversationId = conversation?.data?.id;
     if (!conversationId) {
@@ -173,6 +276,7 @@ class ComateClient {
         pluginVersion: config.pluginVersion,
       },
       { 'x-trace-id': traceId },
+      signal,
     );
     const taskId = task?.data?.taskId;
     if (!taskId) throw new UpstreamError(`task create failed: ${JSON.stringify(task)}`, 502);
@@ -225,17 +329,27 @@ class ComateClient {
     throw lastError;
   }
 
+  /**
+   * Whether another attempt can plausibly succeed.
+   *
+   * Only transport failures and the upstream's own throttle/outage signals
+   * qualify. Retrying a `TypeError` from this code (or a malformed JSON body)
+   * just repeated the same bug three times and hid it behind three delays.
+   * @param error - the failure from one attempt.
+   * @returns true when a retry is worth the quota.
+   */
   isRetryable(error) {
     if (error?.name === 'AbortError') return false;
     if (error instanceof UpstreamError) {
-      return error.status === 429 || (error.status >= 500 && error.status < 600);
+      return error.status === 408 || error.status === 429 || (error.status >= 500 && error.status < 600);
     }
-    return true;
+    const code = error?.cause?.code || error?.code;
+    return typeof code === 'string' && TRANSIENT_CODES.has(code);
   }
 
   async executeOnce(session, body, options) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), options.timeoutMs || UPSTREAM_TIMEOUT_MS);
+    const timeout = setTimeout(() => controller.abort(), options.timeoutMs || this.config.upstreamTimeoutMs);
     const onAbort = () => controller.abort();
     options.signal?.addEventListener('abort', onAbort, { once: true });
     if (options.signal?.aborted) controller.abort();
@@ -281,7 +395,9 @@ class ComateClient {
     let idleTimer = null;
     const armIdle = () => {
       if (idleTimer) clearTimeout(idleTimer);
-      const idleMs = state.ended ? IDLE_AFTER_END_MS : IDLE_BEFORE_END_MS;
+      const idleMs = state.ended
+        ? this.config.idleAfterEndMs || IDLE_AFTER_END_MS
+        : this.config.idleBeforeEndMs || IDLE_BEFORE_END_MS;
       idleTimer = setTimeout(() => reader.cancel().catch(() => {}), idleMs);
     };
 
@@ -324,12 +440,22 @@ class ComateClient {
   }
 }
 
+/**
+ * Fold one streamed parameter fragment into the accumulated input.
+ *
+ * Comate streams parameter values as text, so strings accumulate. An event that
+ * re-sends the whole value instead of a fragment (the end-of-call event does,
+ * on some deployments) would otherwise double the arguments — a value that
+ * starts with everything accumulated so far is that re-send, not a fragment.
+ */
 function mergePartial(target, partial) {
   if (!partial || typeof partial !== 'object') return target;
   for (const [key, value] of Object.entries(partial)) {
     const current = target[key];
     if (typeof value === 'string' && typeof current === 'string') {
-      target[key] = current + value;
+      if (value === '') continue;
+      if (value === current) continue;
+      target[key] = value.length > current.length && value.startsWith(current) ? value : current + value;
     } else if (
       value &&
       typeof value === 'object' &&

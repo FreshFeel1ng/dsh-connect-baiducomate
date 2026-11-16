@@ -40,14 +40,14 @@ function writeSse(response, data) {
   response.write(`data: ${JSON.stringify(data)}\n\n`);
 }
 
-function readBody(request) {
+function readBody(request, limit = MAX_BODY_BYTES) {
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks = [];
     request.on('data', (chunk) => {
       size += chunk.length;
-      if (size > MAX_BODY_BYTES) {
-        reject(Object.assign(new Error('request body too large'), { statusCode: 413 }));
+      if (size > limit) {
+        reject(Object.assign(new Error(`request body too large (limit ${limit} bytes)`), { statusCode: 413 }));
         request.destroy();
         return;
       }
@@ -126,7 +126,21 @@ function createShimServer({ config, client, sessions }) {
   }
 
   async function handleModel(response, id) {
-    const models = await client.fetchModels().catch(() => []);
+    let models;
+    try {
+      models = await client.fetchModels();
+    } catch (error) {
+      // An upstream outage is not "this model does not exist"; reporting 404
+      // would have clients drop a perfectly valid model id.
+      sendJson(response, 502, {
+        error: {
+          message: `Comate model catalog unavailable: ${String(error.message || error)}`,
+          type: 'server_error',
+          code: 'upstream_error',
+        },
+      });
+      return;
+    }
     const entry = models.find((model) => model.modelId === id);
     if (!entry) {
       sendError(response, 404, `model not found: ${id}`, 'invalid_request_error', 'model_not_found');
@@ -146,7 +160,7 @@ function createShimServer({ config, client, sessions }) {
 
   async function handleChat(request, response, requestId) {
     const startedAt = Date.now();
-    const raw = await readBody(request);
+    const raw = await readBody(request, config.maxBodyBytes);
     let body;
     try {
       body = JSON.parse(raw);
@@ -482,6 +496,8 @@ function createShimServer({ config, client, sessions }) {
         toolCalls: toolCalls.length,
         promptTokens: usage.prompt_tokens,
         completionTokens: usage.completion_tokens,
+        // Raw counters, so the cached-vs-prompt question is answerable from a log.
+        rawUsage: state.usage ?? null,
       });
     } catch (error) {
       const [status, message, type, code] = openAiErrorFromUpstream(error);
@@ -503,7 +519,17 @@ function createShimServer({ config, client, sessions }) {
   }
 
   const server = http.createServer((request, response) => {
-    const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
+    let url;
+    try {
+      url = new URL(request.url || '/', `http://${request.headers.host || 'localhost'}`);
+    } catch {
+      // A malformed target or Host header used to throw inside this listener,
+      // which is an uncaught exception: one request killed the shim. Answer 400
+      // and keep serving.
+      response.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+      response.end(JSON.stringify({ error: { message: 'malformed request target', type: 'invalid_request_error', code: 'bad_request' } }));
+      return;
+    }
     const requestId = `req_${crypto.randomBytes(4).toString('hex')}`;
     response.locals = {
       completionId: createCompletionId(),

@@ -138,7 +138,7 @@ dsh --profile comate-test --patch ./overlay.yml headless "Reply with PONG"
 离线与联网自测：
 
 ```bash
-npm test          # 12 项，全离线（假客户端 + dsh-llm 打桩）
+npm test          # 全离线：假客户端 + 本地假 Comate 服务 + dsh-llm/schemastery 打桩
 npm run test:live # 真打一次 Comate，消耗少量额度
 ```
 
@@ -181,7 +181,7 @@ dsh 收到工具调用后在本地执行，再把结果作为工具结果发回�
 
 ## 环境要求
 
-- Node.js **>= 20**（桥接器；插件形态要求 >= 22，与 dsh 一致）
+- Node.js **>= 20**（桥接器）；**插件形态要求 >= 22**，因为 dsh 自身要求 22（`engines` 只声明 20，装到 dsh 里时以 dsh 的要求为准）
 - Comate 私有部署的 `apiHost` 与 `license`（向管理员索取；界面上填写即可，**不需要**安装或登录 Comate 客户端。若本机已登录 Comate，`license` 可留空自动读取 `~/.comate/cli-login.json`）
 - DeepSeek Harness（dsh）桌面端或 CLI（插件形态要求 `>= 0.2.0-rc.2`）
 
@@ -445,7 +445,7 @@ curl http://127.0.0.1:8790/v1/models
 | `displayName` | `Comate` | 模型选择器里显示的提供方名称（**仅插件**） |
 | `sessionTtlMs` | `3600000` | Comate 会话映射的存活时间（**仅插件**） |
 | `maxSessions` | `200` | 最多保留多少个会话映射（**仅插件**） |
-| `sessionsFile` | `~/.dsh/dsh-connect-baiducomate/sessions.json` | 会话映射文件（**仅插件**） |
+| `sessionsFile` | `~/.dsh/dsh-connect-baiducomate/sessions-<apiHost 哈希>.json` | 会话映射文件；按部署分桶，换地址不会把旧 taskId 发到新服务（**仅插件**） |
 | `emitReasoning` | `false` | 是否输出推理块 |
 | `overrideSystemPrompt` | `true` | 用 dsh 系统提示覆盖 Comate |
 | `forwardSystemPrompt` | `false` | 非覆盖模式下转发 system prompt |
@@ -456,6 +456,10 @@ curl http://127.0.0.1:8790/v1/models
 | `uploadImages` | `true` | 是否上传图片 |
 | `imageMaxBytes` | `20971520` | 单图最大字节数 |
 | `maxImages` | `8` | 单轮最多图片数 |
+| `upstreamTimeoutMs` | `600000` | 单次上游请求（模型列表、建会话、执行、图片上传）的超时；到点即失败，不会无限挂住 |
+| `idleBeforeEndMs` | `180000` | 上游迟迟不吐事件时多久放弃这一轮。Comate 大上下文思考可能超过一分钟，调小会白白重试烧额度 |
+| `idleAfterEndMs` | `3000` | 收到结束标记后多久关闭连接 |
+| `maxBodyBytes` | `33292288`（32 MB） | **仅桥接器**：请求体上限。默认值会随 `imageMaxBytes` 抬高（base64 膨胀约 4/3），显式设置则以你的值为准 |
 | `toolMap` | 内置 | Comate 工具名 → dsh 工具名 |
 | `argumentAliases` | `{}` | 额外的参数名映射 |
 
@@ -471,7 +475,12 @@ COMATE_DEVICE
 COMATE_WORKSPACE
 COMATE_SHIM_TOKEN
 COMATE_AUTH_DIR
+COMATE_TIMEOUT_MS
+COMATE_IDLE_BEFORE_END_MS
+COMATE_MAX_BODY_BYTES
 ```
+
+`device` 现在会持久化到 `<stateDir>/device`（桥接器是与 `config.json` 同目录的 `device`，插件是 `~/.dsh/dsh-connect-baiducomate/device`），重启不再像换了一台机器。
 
 ---
 
@@ -561,6 +570,8 @@ Comate 服务端工具 → dsh 工具：
 - 嵌套数组/对象被写成 JSON 字符串时（Comate 按文本流式产出参数，例如 `questions: "[{...}]"`），按 schema 解析回真正的数组/对象；解析失败则原样转发，让 dsh 报出明确错误
 - 未在 dsh schema 中声明的字段会被裁掉
 
+映射表里没有的 Comate 工具名会**原样上报**（转成 snake_case），由 dsh 报「未知工具」交给模型自行调整；不会被改写成某个恰好可用的工具——那会用错误参数执行错误的工具。
+
 dsh 独有的工具（MCP、`job_*`、`session_*`、`terminal_*`、`schedule_*` 等）会通过 `<client_tools>` 目录注入给 Comate；工具集变化时会自动补发。
 
 ---
@@ -590,8 +601,9 @@ dsh 独有的工具（MCP、`job_*`、`session_*`、`terminal_*`、`schedule_*` 
 - 最多 200 条
 - 删除该文件可强制重置所有会话
 - 进程/插件重启后会加载该文件；如果映射丢失，会用 dsh 历史回放兜底
-- 桥接器的文件是仓库里的 `sessions.json`；插件的是 `~/.dsh/dsh-connect-baiducomate/sessions.json`（可用 `sessionsFile` 改）
+- 桥接器的文件是仓库里的 `sessions-<apiHost 哈希>.json`；插件的是 `~/.dsh/dsh-connect-baiducomate/sessions-<apiHost 哈希>.json`（可用 `sessionsFile` 改）
 - 插件形态下键是 `dsh sessionId::model`，也就是说同一个 dsh 会话稳定复用同一个 Comate conversation/task
+- 在界面上改了 `apiHost`/`license`，等于是换了一个部署：旧 taskId 对新服务无意义，插件会清空映射并打一行 `sessions.invalidated`，下一轮自动建新会话
 
 ---
 
@@ -618,6 +630,13 @@ dsh 独有的工具（MCP、`job_*`、`session_*`、`terminal_*`、`schedule_*` 
 - 是否设置了 `COMATE_LICENSE` 且覆盖了配置
 - license 是否过期
 - `apiHost` 是否能访问
+
+### 请求一直不返回 / 卡很久
+
+两条时间线，都可配置：
+
+- `upstreamTimeoutMs`（默认 10 分钟）：单次上游请求的硬超时。到点抛 `TIMEOUT`，不会像以前那样永久挂住
+- `idleBeforeEndMs`（默认 3 分钟）：上游连续这么久不吐任何事件才放弃。Comate 大上下文思考可能超过一分钟，别调太小
 
 ### `model not found`
 
@@ -653,7 +672,7 @@ Comate 偶尔返回空轮次。重新发送，或新建 dsh 会话。
 
 ### 工具调用报“未知工具”
 
-Comate 调用了 dsh 没有的工具。模型会根据错误自行调整；也可以在 `toolMap` / `argumentAliases` 中补充映射。
+Comate 调用了 dsh 没有的工具。模型会根据错误自行调整；也可以在 `toolMap` / `argumentAliases` 中补充映射。插件不会再把它悄悄改写成别的工具（旧行为会让 Comate 的 `SendSlack` 落到 `glob` 上），所以这条错误现在会如实出现。
 
 ### Comate 升级后接口 404
 
@@ -704,11 +723,12 @@ Comate 调用了 dsh 没有的工具。模型会根据错误自行调整；也�
 │   ├── fixtures/
 │   └── live-smoke.mjs      # 联网：真打一次 Comate
 └── src/                    # 两种形态共用内核
-    ├── constants.js        # 常量
+    ├── constants.js        # 常量与默认超时
     ├── logger.js           # 结构化日志
-    ├── config.js           # 桥接器配置加载与校验
+    ├── config-core.js      # 统一配置解析：字段、默认值、校验、device 持久化
+    ├── config.js           # 桥接器入口：读 config.json 并严格校验
     ├── sessions.js         # 会话持久化
-    ├── upstream.js         # Comate 协议客户端
+    ├── upstream.js         # Comate 协议客户端（带超时与重试分类）
     ├── messages.js         # 消息解析与历史回放
     ├── tools.js            # 工具映射与参数转换
     ├── openai.js           # OpenAI ↔ Comate 请求/响应转换

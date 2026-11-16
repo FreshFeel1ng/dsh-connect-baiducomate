@@ -9,6 +9,7 @@
 const path = require('node:path');
 
 const { loadConfig } = require('./src/config');
+const { bucketOf } = require('./src/config-core');
 const { log, redact } = require('./src/logger');
 const { SessionStore } = require('./src/sessions');
 const { ComateClient } = require('./src/upstream');
@@ -18,7 +19,9 @@ const { SESSION_TTL_MS, MAX_SESSIONS } = require('./src/constants');
 const config = loadConfig(path.join(__dirname, 'config.json'));
 
 const sessions = new SessionStore({
-  file: path.join(__dirname, 'sessions.json'),
+  // One file per deployment: pointing the shim at another server must not send
+  // that server the previous one's task ids.
+  file: path.join(__dirname, `sessions-${bucketOf(config.apiHost)}.json`),
   ttlMs: SESSION_TTL_MS,
   max: MAX_SESSIONS,
 });

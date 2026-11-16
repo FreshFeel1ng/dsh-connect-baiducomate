@@ -2,9 +2,13 @@
 config.json
 config.local.json
 
-# Persisted Comate conversation/task mapping
+# Persisted Comate conversation/task mapping (one file per deployment)
 sessions.json
+sessions-*.json
 sessions.json.*.tmp
+
+# Stable device id the plugin/shim reports to Comate
+device
 
 # Dependencies and logs
 node_modules/

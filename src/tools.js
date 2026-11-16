@@ -101,9 +101,10 @@ function toDshToolName(serverName, available, toolMap) {
   for (const candidate of candidates) {
     if (candidate && (available.size === 0 || available.has(candidate))) return candidate;
   }
-  for (const candidate of Object.values(toolMap)) {
-    if (available.has(candidate)) return candidate;
-  }
+  // No fallback to some other available tool: mapping an unknown Comate tool
+  // onto an unrelated dsh tool ran the wrong thing with the wrong arguments.
+  // An unmapped name reaches dsh as an unknown tool, which it reports back to
+  // the model so the model can adapt.
   return mapped || snake;
 }
 
@@ -205,6 +206,39 @@ function sanitizeInput(name, input, schemas, config) {
   return result;
 }
 
+/** Budget for the whole catalogue block, and for one tool's schema inside it. */
+const CATALOG_BUDGET = 16000;
+const CATALOG_SCHEMA_CHARS = 3000;
+
+/**
+ * Strip the human copy from a schema before falling back to dropping it.
+ * Descriptions are the bulk of an MCP schema and are worth less to the model
+ * than the structure it needs to call the tool; the shape stays intact.
+ */
+function compactSchema(schema) {
+  let clone;
+  try {
+    clone = JSON.parse(JSON.stringify(schema || {}));
+  } catch {
+    return '{"type":"object"}';
+  }
+  const walk = (node) => {
+    if (!node || typeof node !== 'object') return;
+    delete node.description;
+    delete node.examples;
+    for (const value of Object.values(node)) {
+      if (Array.isArray(value)) value.forEach(walk);
+      else walk(value);
+    }
+  };
+  walk(clone);
+  try {
+    return JSON.stringify(clone);
+  } catch {
+    return '{"type":"object"}';
+  }
+}
+
 /**
  * Render dsh-only tools as a prompt block. Comate's execute API has no `tools`
  * field, so this block travels in `contexts` and names each callable tool.
@@ -223,7 +257,16 @@ function toolCatalogContext(tools, config) {
   }
   candidates.sort((a, b) => Number(a.isBuiltin) - Number(b.isBuiltin));
 
+  const head = [
+    '<client_tools>',
+    'The client executes tools on the user machine. Your built-in file, search, and shell tools remain preferred for those tasks.',
+    'When the task needs a capability below, emit a tool_use whose name is exactly the listed name and whose input matches its JSON schema. Never invent a name.',
+  ];
+  const tail = '</client_tools>';
+  let budget = CATALOG_BUDGET - head.join('\n').length - tail.length;
+
   const entries = [];
+  let omitted = 0;
   for (const { fn, name } of candidates.slice(0, config.forwardToolLimit)) {
     const description = String(fn.description || '').replace(/\s+/g, ' ').slice(0, 300);
     let schema = '{}';
@@ -232,17 +275,28 @@ function toolCatalogContext(tools, config) {
     } catch {
       schema = '{}';
     }
-    entries.push(`- ${name}: ${description}\n  input: ${schema.slice(0, 1500)}`);
+    // Whole schemas only: half a JSON document teaches the model nothing and
+    // made whole tools uncallable.
+    if (schema.length > CATALOG_SCHEMA_CHARS) schema = compactSchema(fn.parameters);
+    if (schema.length > CATALOG_SCHEMA_CHARS) schema = '{"type":"object","description":"schema omitted for length"}';
+    const entry = `- ${name}: ${description}\n  input: ${schema}`;
+    if (entry.length > budget) {
+      omitted += 1;
+      continue;
+    }
+    budget -= entry.length;
+    entries.push(entry);
   }
   if (entries.length === 0) return '';
 
   return [
-    '<client_tools>',
-    'The client executes tools on the user machine. Your built-in file, search, and shell tools remain preferred for those tasks.',
-    'When the task needs a capability below, emit a tool_use whose name is exactly the listed name and whose input matches its JSON schema. Never invent a name.',
+    ...head,
     ...entries,
-    '</client_tools>',
-  ].join('\n').slice(0, 16000);
+    omitted > 0 ? `- (${omitted} more tool${omitted === 1 ? '' : 's'} omitted for length)` : '',
+    tail,
+  ]
+    .filter(Boolean)
+    .join('\n');
 }
 
 const IMAGE_EXTENSION = /\.(png|jpe?g|gif|webp|bmp|svg)$/i;

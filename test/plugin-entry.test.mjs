@@ -127,12 +127,40 @@ test('a settings save reaches the next request without a remount', () => {
   // Any request re-reads the live references; a provider info call is the cheapest one.
   adapter.providerInfo('comate');
 
-  const applied = ctx.lines
-    .map((text) => JSON.parse(text))
-    .filter((payload) => payload.event === 'config.applied');
+  const events = ctx.lines.map((text) => JSON.parse(text));
+  const applied = events.filter((payload) => payload.event === 'config.applied');
   assert.equal(applied.length, 1, 'expected exactly one applied-config diagnostic');
   assert.equal(applied[0].upstream, 'http://second.example:9359');
   assert.deepEqual(applied[0].changed.sort(), ['apiHost', 'license']);
   assert.equal(applied[0].error, null);
 });
+
+test('switching the deployment drops the task ids that belonged to the old one', () => {
+  const ctx = fakeContext();
+  const sessionsFile = path.join(os.tmpdir(), `comate-entry-moved-${process.pid}`, 'sessions.json');
+  const apiHost = { value: 'http://first.example:9359', get() { return this.value; } };
+  entry.apply(ctx, { apiHost, license: 'license-one', sessionsFile });
+
+  const adapter = ctx.registered[0].adapter;
+  adapter.providerInfo('comate');
+
+  apiHost.value = 'http://second.example:9359';
+  adapter.providerInfo('comate');
+
+  const invalidated = ctx.lines
+    .map((text) => JSON.parse(text))
+    .filter((payload) => payload.event === 'sessions.invalidated');
+  assert.equal(invalidated.length, 1, 'the move must invalidate the mapping exactly once');
+  assert.equal(invalidated[0].upstream, 'http://second.example:9359');
+  assert.equal(invalidated[0].reason, 'deployment identity changed');
+
+  // An unrelated edit keeps the mapping: only identity changes invalidate it.
+  apiHost.value = 'http://second.example:9359';
+  adapter.providerInfo('comate');
+  assert.equal(
+    ctx.lines.map((text) => JSON.parse(text)).filter((payload) => payload.event === 'sessions.invalidated').length,
+    1,
+  );
+});
+
 

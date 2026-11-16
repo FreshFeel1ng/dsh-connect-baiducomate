@@ -51,6 +51,18 @@ class SessionStore {
     return this.sessions.get(key);
   }
 
+  /**
+   * Drop every mapping, for a configuration change that makes them meaningless
+   * (a new deployment or credential owns different server-side tasks).
+   * @returns the number of mappings dropped.
+   */
+  clear() {
+    const removed = this.sessions.size;
+    this.sessions.clear();
+    if (removed > 0) this.scheduleSave();
+    return removed;
+  }
+
   set(key, session) {
     this.sessions.set(key, session);
     this.scheduleSave();
