@@ -13,7 +13,7 @@ const files = [
     .map((file) => path.join(root, 'src', file)),
   ...fs
     .readdirSync(path.join(root, 'lib'))
-    .filter((file) => file.endsWith('.mjs'))
+    .filter((file) => file.endsWith('.mjs') || file === 'client.js')
     .map((file) => path.join(root, 'lib', file)),
 ];
 

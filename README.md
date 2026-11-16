@@ -20,6 +20,7 @@
 ## 特性
 
 - **两种形态一套内核**：插件与 HTTP 桥接器共用 `src/` 里的协议、工具映射与会话存储
+- **界面内配置**：装好后在 dsh 的 设置 → 插件 里填部署地址和 license，不用装 Comate 客户端、不用手改 YAML；保存后下一轮对话生效，无需重启
 - **原生 LLM 路由**：插件形态下 dsh 直接调用 Comate 私有协议，没有 HTTP 中转，也没有端口
 - **动态模型列表**：模型 ID、上下文容量、图片能力直接从 Comate 目录读取，不再手抄 yaml
 - **工具调用**：Comate 的工具调用会映射到 dsh 本地工具，结果再回传给 Comate
@@ -65,7 +66,33 @@ dsh plugin --profile desktop add github:FreshFeel1ng/dsh-connect-baiducomate
 
 安装后 `dsh.profile.bundles` 会多出 `dsh-connect-baiducomate`，它的 `cordis.patch.yml` 插入一行 `comate` 插件。
 
-### 配置
+### 配置（在 dsh 界面里填，推荐）
+
+装完重启 dsh，然后：
+
+```
+设置 → 插件 → dsh-connect-baiducomate → 行 comate → 配置
+```
+
+能填的字段：
+
+| 字段 | 说明 |
+|---|---|
+| `apiHost` | Comate 私有部署地址，例如 `http://192.168.1.10:9359`（必须 http/https） |
+| `license` | 账号凭证，密码框输入；已保存后留空表示不修改 |
+| `displayName` | 模型选择器里显示的提供方名称 |
+| `modelKey` | 模型选 `auto` 时实际请求的模型 ID |
+| `workspacePath` | 兜底工作目录，可留空 |
+| `emitReasoning` / `forwardTools` / `uploadImages` | 三个开关 |
+
+保存写入的是 profile 自己的 patch 层，并**在下一轮对话即时生效**（这些字段是 volatile 的，dsh 不会为改配置重启插件）。所以：
+
+- 不需要安装、更不需要登录 Comate 客户端——`apiHost` 和 `license` 向管理员索取即可
+- 表单里没有的字段（`toolMap`、`argumentAliases`、各类上限）仍然写 YAML，见下面的「手工配置」
+
+> 表单只在 dsh `0.2.0-rc.2` 及以上出现。更老的版本不会注册这个页面，退回手工配置。
+
+### 手工配置（可选，字段更全）
 
 行配置不随包发布部署信息，请写在 *profile 自己的* patch 层（`%USERPROFILE%\.dsh\profiles\<profile>\cordis.patch.yml`），它会覆盖 bundle 里的同一行：
 
@@ -155,7 +182,7 @@ dsh 收到工具调用后在本地执行，再把结果作为工具结果发回�
 ## 环境要求
 
 - Node.js **>= 20**（桥接器；插件形态要求 >= 22，与 dsh 一致）
-- 已安装并登录的 Comate 私有部署客户端（用于获取 `apiHost` 和 `license`）
+- Comate 私有部署的 `apiHost` 与 `license`（向管理员索取；界面上填写即可，**不需要**安装或登录 Comate 客户端。若本机已登录 Comate，`license` 可留空自动读取 `~/.comate/cli-login.json`）
 - DeepSeek Harness（dsh）桌面端或 CLI（插件形态要求 `>= 0.2.0-rc.2`）
 
 ---
@@ -397,6 +424,8 @@ curl http://127.0.0.1:8790/v1/models
 
 插件行（profile patch 里的 `- id: comate`）与桥接器的 `config.json` 使用同一套字段名，差别只有三行：插件形态不需要 `port` / `host` / `authToken`（没有 HTTP 监听），另外多了 `displayName` 与三个会话存储字段。
 
+其中 **`apiHost`、`license`、`displayName`、`modelKey`、`workspacePath`、`emitReasoning`、`forwardTools`、`uploadImages`** 这 8 个是 volatile 的，可以直接在 设置 → 插件 的表单里改，保存后即时生效；其余字段只能写 YAML。
+
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `port` | `8790` | shim 监听端口（**仅桥接器**） |
@@ -568,6 +597,15 @@ dsh 独有的工具（MCP、`job_*`、`session_*`、`terminal_*`、`schedule_*` 
 
 ## 常见问题
 
+### 设置 → 插件 里没有「配置」按钮
+
+按顺序排查：
+
+1. dsh 版本低于 `0.2.0-rc.2`：老版本没有插件配置表单，只能手改 patch
+2. 装完没有重启 dsh：浏览器半侧（`lib/client.js`）是启动时送达的
+3. 本包是本地链接安装时，profile 的 `node_modules/dsh-connect-baiducomate` 必须是 **junction/软链**而非拷贝，否则改了代码不生效
+4. 该行没有出现在配置台账里：`dsh --profile <name> --dump-config` 应能看到 `- id: comate`
+
 ### `DUPLICATE_ADAPTER`: an adapter for provider "comate" is already registered
 
 插件路由和旧的 HTTP 方案撞了。profile 的 patch 里如果还有 `llm-pi-ai` 行的 `providers.comate`（指向 `127.0.0.1:8790`），删掉它再重启 dsh。`agent-default-model` 里的 `provider: comate` 不需要改。
@@ -644,7 +682,9 @@ Comate 调用了 dsh 没有的工具。模型会根据错误自行调整；也�
 ```
 .
 ├── lib/                    # dsh 插件（原生 LLM 适配器）
-│   ├── index.mjs           # cordis 入口：name / inject / apply，注册 comate 路由
+│   ├── index.mjs           # cordis 入口：name / inject / Config / apply，注册 comate 路由
+│   ├── schema.mjs          # 行的 Config schema：决定设置面板里出现哪些字段
+│   ├── client.js           # 浏览器半侧：设置 → 插件 里的配置表单
 │   ├── adapter.mjs         # LlmAdapter 实现：stream / listModels / resolveModel
 │   ├── round.mjs           # dsh 消息块 → 共享内核的轮次结构
 │   └── config.mjs          # 插件行配置解析（失败不退出进程）

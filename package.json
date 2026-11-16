@@ -1,12 +1,13 @@
 {
   "name": "dsh-connect-baiducomate",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "private": false,
   "description": "Connect a Baidu Comate private deployment to DeepSeek Harness: a native dsh LLM adapter plugin, plus an optional OpenAI-compatible HTTP shim.",
   "type": "commonjs",
   "main": "./lib/index.mjs",
   "exports": {
     ".": "./lib/index.mjs",
+    "./client": "./lib/client.js",
     "./shim": "./comate-shim.js",
     "./package.json": "./package.json"
   },
@@ -34,13 +35,20 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
     }
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-llm": ">=0.2.0-rc.2"
+    "@deepseek-ai/dsh-llm": ">=0.2.0-rc.2",
+    "@deepseek-ai/schemastery": ">=3.18.0"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh-llm": {
+      "optional": true
+    },
+    "@deepseek-ai/schemastery": {
       "optional": true
     }
   },

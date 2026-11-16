@@ -5,9 +5,14 @@
 # to the composition, and no HTTP listener is opened.
 #
 # The row ships without deployment values on purpose: an `apiHost` baked into a
-# published package would be wrong for everybody. Fill them in your profile's own
-# patch layer ($DSH_HOME/profiles/<profile>/cordis.patch.yml), which is applied
-# after this layer and wins per row:
+# published package would be wrong for everybody. Fill them in through the UI:
+#
+#   设置 → 插件 → dsh-connect-baiducomate → 行 `comate` → 配置
+#
+# That form writes this profile's own patch layer
+# ($DSH_HOME/profiles/<profile>/cordis.patch.yml) and applies on the next
+# request, with no restart. Editing YAML by hand still works and is the escape
+# hatch for fields the form does not show:
 #
 #   - id: comate
 #     config:

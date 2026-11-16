@@ -12,10 +12,12 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const stubUrl = new URL('./fixtures/dsh-llm-stub.mjs', import.meta.url).href;
+const schemaStubUrl = new URL('./fixtures/schemastery-stub.mjs', import.meta.url).href;
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
     if (specifier === '@deepseek-ai/dsh-llm') return { url: stubUrl, shortCircuit: true };
+    if (specifier === '@deepseek-ai/schemastery') return { url: schemaStubUrl, shortCircuit: true };
     return nextResolve(specifier, context);
   },
 });
@@ -27,14 +29,29 @@ function fakeContext() {
   const registered = [];
   const effects = [];
   const lines = [];
+  const configured = [];
   return {
     registered,
     effects,
     lines,
+    configured,
     logger: { info: (line) => lines.push(line) },
     get: () => undefined,
     effect: (fn) => {
       effects.push(fn());
+    },
+    inject: (_services, callback) => {
+      callback({
+        effect: (fn) => {
+          effects.push(fn());
+        },
+        settings: {
+          configure: (policy) => {
+            configured.push(policy);
+            return () => {};
+          },
+        },
+      });
     },
     llm: {
       registerAdapter: (providers, adapter) => {
@@ -61,9 +78,10 @@ test('apply registers exactly one comate route and logs structured lines', () =>
   assert.deepEqual(ctx.registered[0].providers, ['comate']);
   assert.equal(ctx.registered[0].adapter.providerInfo('comate').name, 'Comate');
 
-  // One effect disposes the session store; registration itself is the other side.
-  assert.equal(ctx.effects.length, 1);
+  // One effect disposes the session store, one registers the page policy.
+  assert.equal(ctx.effects.length, 2);
   assert.equal(typeof ctx.effects[0], 'function');
+  assert.deepEqual(ctx.configured, [{ auto: false }]);
 
   const events = ctx.lines.map((line) => JSON.parse(line).event);
   assert.ok(events.includes('llm.registered'));
@@ -79,3 +97,42 @@ test('a row without deployment values still mounts, and reports the problem', ()
   assert.ok(line, 'expected a config.invalid diagnostic');
   assert.match(line.message, /apiHost/);
 });
+
+test('the exported Config is what dsh builds the plugin form from', () => {
+  const schema = entry.Config.toJSON();
+  assert.equal(schema.type, 'object');
+  for (const key of ['apiHost', 'license', 'displayName', 'modelKey', 'workspacePath', 'emitReasoning', 'forwardTools', 'uploadImages']) {
+    const field = schema.dict[key];
+    assert.ok(field, `expected a ${key} field`);
+    assert.equal(field.meta.volatile, true, `${key} must be editable at runtime`);
+  }
+  assert.equal(schema.dict.license.meta.role, 'secret', 'license must never be read back');
+  assert.equal(schema.dict.emitReasoning.type, 'boolean');
+  assert.equal(schema.meta.loose, true, 'fields outside the form must survive a save');
+  assert.equal(entry.default.Config, entry.Config);
+});
+
+test('a settings save reaches the next request without a remount', () => {
+  const ctx = fakeContext();
+  const sessionsFile = path.join(os.tmpdir(), `comate-entry-live-${process.pid}`, 'sessions.json');
+  const apiHost = { value: 'http://first.example:9359', get() { return this.value; } };
+  const license = { value: 'license-one', get() { return this.value; } };
+  entry.apply(ctx, { apiHost, license, sessionsFile });
+
+  const adapter = ctx.registered[0].adapter;
+  assert.equal(adapter.providerInfo('comate').name, 'Comate');
+
+  apiHost.value = 'http://second.example:9359';
+  license.value = 'license-two';
+  // Any request re-reads the live references; a provider info call is the cheapest one.
+  adapter.providerInfo('comate');
+
+  const applied = ctx.lines
+    .map((text) => JSON.parse(text))
+    .filter((payload) => payload.event === 'config.applied');
+  assert.equal(applied.length, 1, 'expected exactly one applied-config diagnostic');
+  assert.equal(applied[0].upstream, 'http://second.example:9359');
+  assert.deepEqual(applied[0].changed.sort(), ['apiHost', 'license']);
+  assert.equal(applied[0].error, null);
+});
+
