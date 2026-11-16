@@ -1,6 +1,6 @@
 {
   "name": "dsh-connect-baiducomate",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "private": false,
   "description": "Connect a Baidu Comate private deployment to DeepSeek Harness: a native dsh LLM adapter plugin, plus an optional OpenAI-compatible HTTP shim.",
   "type": "commonjs",

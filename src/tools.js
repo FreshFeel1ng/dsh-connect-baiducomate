@@ -107,21 +107,49 @@ function toDshToolName(serverName, available, toolMap) {
   return mapped || snake;
 }
 
+/**
+ * Comate streams parameter values as text, so a nested array/object frequently
+ * arrives JSON-encoded inside a string. Parse it back when the schema declares
+ * that shape; dsh validates client-tool arguments strictly and rejects strings.
+ */
+function parseJsonShaped(value) {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  if (trimmed[0] !== '[' && trimmed[0] !== '{') return undefined;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return undefined;
+  }
+}
+
 function coerceValue(value, property) {
   if (!property || typeof property !== 'object') return value;
-  const type = property.type;
-  if (type === 'number' || type === 'integer') {
+  const types = Array.isArray(property.type) ? property.type : [property.type];
+  if (types.includes('number') || types.includes('integer')) {
     if (value === '' || value === null || value === undefined) return undefined;
     const number = typeof value === 'number' ? value : Number(value);
     return Number.isFinite(number) ? number : undefined;
   }
-  if (type === 'boolean') {
+  if (types.includes('boolean')) {
     if (typeof value === 'boolean') return value;
     if (value === 'true' || value === 1 || value === '1') return true;
     if (value === 'false' || value === 0 || value === '0') return false;
     return undefined;
   }
-  if (type === 'string' && (typeof value === 'number' || typeof value === 'boolean')) {
+  if (types.includes('array')) {
+    if (Array.isArray(value)) return value;
+    if (value === '' || value === null || value === undefined) return undefined;
+    const parsed = parseJsonShaped(value);
+    return Array.isArray(parsed) ? parsed : value;
+  }
+  if (types.includes('object')) {
+    if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+    if (value === '' || value === null || value === undefined) return undefined;
+    const parsed = parseJsonShaped(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : value;
+  }
+  if (types.includes('string') && (typeof value === 'number' || typeof value === 'boolean')) {
     return String(value);
   }
   return value;

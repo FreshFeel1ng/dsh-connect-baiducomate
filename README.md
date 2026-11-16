@@ -529,6 +529,7 @@ Comate 服务端工具 → dsh 工具：
 - `query` → `pattern`
 - `offset` / `limit` 字符串 → 数字
 - `cmd` → `command`
+- 嵌套数组/对象被写成 JSON 字符串时（Comate 按文本流式产出参数，例如 `questions: "[{...}]"`），按 schema 解析回真正的数组/对象；解析失败则原样转发，让 dsh 报出明确错误
 - 未在 dsh schema 中声明的字段会被裁掉
 
 dsh 独有的工具（MCP、`job_*`、`session_*`、`terminal_*`、`schedule_*` 等）会通过 `<client_tools>` 目录注入给 Comate；工具集变化时会自动补发。
@@ -603,6 +604,10 @@ curl http://127.0.0.1:8790/v1/models
 ### `cannot read ...: binary file`
 
 Comate 试图用 `Read` 读取图片。shim 会把图片路径自动改写成 dsh 的 `read_image`；如果仍然出现，确认 dsh 已注册 `read_image` 工具。
+
+### `invalid arguments: "xxx" must be an array`
+
+Comate 把嵌套数组参数写成了 JSON 字符串（`"questions": "[{...}]"`），而 dsh 的客户端工具校验只接受真正的数组。`src/tools.js` 会按 schema 把它解析回来；如果仍然报这条，多半是上游把参数流式输出到一半被截断，重试一次即可。同类字段还有 `present.files`、`todo_write.todos`、`schedule_create.questions`。
 
 ### `empty_response`
 
