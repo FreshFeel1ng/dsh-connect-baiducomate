@@ -1,15 +1,48 @@
 {
   "name": "dsh-connect-baiducomate",
-  "version": "1.0.0",
-  "private": true,
-  "description": "OpenAI-compatible bridge that connects DeepSeek Harness (dsh) to a Baidu Comate private deployment.",
-  "main": "comate-shim.js",
+  "version": "1.1.0",
+  "private": false,
+  "description": "Connect a Baidu Comate private deployment to DeepSeek Harness: a native dsh LLM adapter plugin, plus an optional OpenAI-compatible HTTP shim.",
+  "type": "commonjs",
+  "main": "./lib/index.mjs",
+  "exports": {
+    ".": "./lib/index.mjs",
+    "./shim": "./comate-shim.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "src",
+    "comate-shim.js",
+    "config.example.json",
+    "cordis.patch.yml",
+    "launcher",
+    "scripts",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "start": "node comate-shim.js",
-    "check": "node scripts/check.js"
+    "check": "node scripts/check.js",
+    "test": "node --test \"test/**/*.test.mjs\"",
+    "test:live": "node test/live-smoke.mjs"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22",
+    "dsh": ">=0.2.0-rc.2"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-llm": ">=0.2.0-rc.2"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-llm": {
+      "optional": true
+    }
   },
   "license": "MIT",
   "repository": {
@@ -18,9 +51,12 @@
   },
   "keywords": [
     "dsh",
+    "dsh-plugin",
     "deepseek-harness",
     "comate",
     "baidu",
+    "cordis",
+    "llm-adapter",
     "openai-compatible",
     "shim"
   ]

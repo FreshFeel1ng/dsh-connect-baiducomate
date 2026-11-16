@@ -11,6 +11,10 @@ const files = [
     .readdirSync(path.join(root, 'src'))
     .filter((file) => file.endsWith('.js'))
     .map((file) => path.join(root, 'src', file)),
+  ...fs
+    .readdirSync(path.join(root, 'lib'))
+    .filter((file) => file.endsWith('.mjs'))
+    .map((file) => path.join(root, 'lib', file)),
 ];
 
 for (const file of files) {

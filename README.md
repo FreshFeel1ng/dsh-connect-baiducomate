@@ -1,8 +1,15 @@
 # dsh-connect-baiducomate
 
-把 **百度 Comate（文心快码）私有部署** 接入 **DeepSeek Harness (dsh)** 的 OpenAI 兼容桥接器。
+把 **百度 Comate（文心快码）私有部署** 接入 **DeepSeek Harness (dsh)**。
 
-dsh 把它当作普通的 OpenAI Chat Completions 提供方使用；模型推理走 Comate 额度，工具仍然由 dsh 在本地执行。
+同一个仓库提供两种接入方式，共用一套 Comate 协议实现：
+
+| 方式 | 形态 | 适合谁 |
+|---|---|---|
+| **dsh 插件（推荐）** | 原生 `LlmAdapter`，`dsh plugin add` 装上即用，不额外起进程 | dsh 用户 |
+| **HTTP 桥接器** | 独立 Node 进程，暴露 OpenAI 兼容 `/v1`，供任何 OpenAI 客户端使用 | 其它客户端、调试、非 dsh 场景 |
+
+两种方式都由 dsh 在本地执行工具；模型推理走 Comate 额度。
 
 > **免责声明**
 >
@@ -12,16 +19,111 @@ dsh 把它当作普通的 OpenAI Chat Completions 提供方使用；模型推理
 
 ## 特性
 
-- **OpenAI 兼容接口**：`/v1/models`、`/v1/chat/completions`，支持流式与非流式
+- **两种形态一套内核**：插件与 HTTP 桥接器共用 `src/` 里的协议、工具映射与会话存储
+- **原生 LLM 路由**：插件形态下 dsh 直接调用 Comate 私有协议，没有 HTTP 中转，也没有端口
+- **动态模型列表**：模型 ID、上下文容量、图片能力直接从 Comate 目录读取，不再手抄 yaml
 - **工具调用**：Comate 的工具调用会映射到 dsh 本地工具，结果再回传给 Comate
 - **MCP 工具转发**：dsh 新增的 MCP 工具会以工具目录形式传给 Comate，中途新增也会在下一轮补发
-- **多模态**：支持图片输入，自动上传到 Comate 并转换成 `IMAGE` 上下文（仅视觉模型）
+- **多模态**：支持图片输入，读取 dsh 附件后上传到 Comate 并转换成 `IMAGE` 上下文（仅视觉模型）
 - **系统提示覆盖**：把 dsh 的 system prompt 作为最高优先级上下文注入，尽量覆盖 Comate 自身提示
-- **会话持久化**：`sessions.json` 保存 conversation/task 映射，shim 重启不丢会话
-- **用量统计**：把 Comate 的 `inputTokens/cachedInputTokens/outputTokens` 转成 OpenAI usage
-- **模型选择**：支持 Comate 模型列表中的具体模型，不只 `auto`
-- **协议细节**：`stop`、`tool_choice`、`parallel_tool_calls`、`max_tokens`（尽力而为）
-- **结构化日志**：JSON 行日志，包含 requestId、模型、轮次、耗时、token
+- **会话持久化**：`sessions.json` 保存 conversation/task 映射，插件/桥接器重启不丢会话
+- **用量统计**：把 Comate 的 `inputTokens/cachedInputTokens/outputTokens` 转成 dsh `TokenUsage`
+- **协议细节**：`stop`、`max_tokens`、空回合重试（`EMPTY_RESPONSE`）按 dsh 约定上报
+- **结构化日志**：JSON 行日志，包含模型、轮次、耗时、token
+
+---
+
+## 作为 dsh 插件使用（推荐）
+
+### 原理
+
+dsh 的 Agent 循环留在本地：它组装请求、保存工具、执行工具。插件只负责协议翻译和 Comate 侧的会话映射。
+
+```
+dsh agent loop ──GenerateOptions──▶ ComateAdapter ──私有 HTTP/SSE──▶ Comate
+      ▲                                  │
+      └──────────StreamChunk─────────────┘
+        tool-call 』 → dsh 本地执行 → tool 消息 → 下一轮 toolUseResults
+```
+
+插件注册一个 provider 路由 `comate`，实现在 `lib/`：
+
+- `lib/index.mjs`：cordis 插件入口（`name` / `inject` / `apply`），注册路由并管理会话存储
+- `lib/adapter.mjs`：`LlmAdapter` 实现，`stream()` 把 Comate SSE 翻成 `StreamChunk`
+- `lib/round.mjs`：dsh 消息块 → 共享内核认识的轮次结构
+- `lib/config.mjs`：载入并校验行配置（不通过就报错，但绝不让 dsh 起不来）
+
+### 安装
+
+```bash
+# 从本地检出安装（会链接这个目录）
+dsh plugin --profile desktop add D:\path\to\dsh-connect-baiducomate
+
+# 或从 git 安装（需要 lib/ 已提交；本仓库不生成构建产物）
+dsh plugin --profile desktop add github:FreshFeel1ng/dsh-connect-baiducomate
+```
+
+安装后 `dsh.profile.bundles` 会多出 `dsh-connect-baiducomate`，它的 `cordis.patch.yml` 插入一行 `comate` 插件。
+
+### 配置
+
+行配置不随包发布部署信息，请写在 *profile 自己的* patch 层（`%USERPROFILE%\.dsh\profiles\<profile>\cordis.patch.yml`），它会覆盖 bundle 里的同一行：
+
+```yaml
+- id: comate
+  config:
+    apiHost: http://comate.example.internal:9359   # 你的 Comate 私有部署地址
+    license: <your-license-uuid>                   # 也可不写，用 COMATE_LICENSE 或 ~/.comate/cli-login.json
+    workspacePath: D:\work\repo           # 兜底工作目录；运行时以 dsh 会话为准
+```
+
+### 从 HTTP 桥接器迁移
+
+一个 provider 路由只能由一个适配器持有。如果 profile 里还留着旧的 `llm-pi-ai` 行，其 `providers.comate` 必须删掉，否则注册会失败并提示 `DUPLICATE_ADAPTER`。删掉那段后，`agent-default-model` 里的 `provider: comate` 可以保持不变，继续指向本插件。
+
+### 验证
+
+```bash
+dsh --profile desktop --dump-config     # 应能看到 dsh-connect-baiducomate 这一层
+```
+
+重启 dsh 后，模型选择器里的 `Comate` 提供方会列出 Comate 目录里的全部模型（不再需要手写 `models:`）。不想动现有 profile 时，可以像下面这样开一个一次性 profile 验证：
+
+```bash
+dsh --profile comate-test --from-default-profile headless --dump-config
+dsh plugin --profile comate-test add D:\path\to\dsh-connect-baiducomate
+dsh --profile comate-test --patch ./overlay.yml headless "Reply with PONG"
+```
+
+`overlay.yml` 只需要写 `comate` 行的部署信息和默认模型：
+
+```yaml
+- id: comate
+  config:
+    apiHost: http://comate.example.internal:9359
+    license: <your-license-uuid>
+- id: agent-default-model
+  config:
+    provider: comate
+    model: auto
+```
+
+离线与联网自测：
+
+```bash
+npm test          # 12 项，全离线（假客户端 + dsh-llm 打桩）
+npm run test:live # 真打一次 Comate，消耗少量额度
+```
+
+### 与桥接器形态的差异
+
+dsh 不向适配器发送 `tool_choice` / `parallel_tool_calls`，插件形态下「能不能用工具」完全由 dsh 本轮传下来的工具列表决定（列表为空时插件会让 Comate 只用文字回答）；其它行为（工具映射、系统提示覆盖、工具目录补发、图片上传、历史回放兜底）与桥接器一致。
+
+---
+
+## 作为 OpenAI 兼容桥接器使用
+
+浏览器/其它客户端/命令行工具想复用 Comate 额度时，用这个形态：dsh 把它当作普通的 OpenAI Chat Completions 提供方；模型推理走 Comate 额度，工具仍然由 dsh 在本地执行。
 
 ---
 
@@ -39,27 +141,26 @@ SSE 事件里包含：
 - `FUNCTION_CALL_START / PARAMS_APPEND / END`：结构化工具调用
 - `TOKEN_USAGE`：用量
 
-本项目把这套协议翻译成 OpenAI Chat Completions：
+两种形态都建立在这套三步协议之上：插件形态把它直接翻成 dsh 的 `StreamChunk`，桥接器形态把它翻成 OpenAI Chat Completions。
 
 ```
-dsh  ──OpenAI──▶  comate-shim  ──私有 HTTP/SSE──▶  Comate 服务端
-      ◀─────────            ◀──────────────────
-       tool_calls             tool_use 事件
+插件：  dsh agent loop ──StreamChunk/GenerateOptions──▶ ComateAdapter ──私有 HTTP/SSE──▶ Comate 服务端
+桥接器：dsh ──OpenAI──▶ comate-shim ──私有 HTTP/SSE──▶ Comate 服务端
 ```
 
-dsh 收到 `tool_calls` 后在本地执行，再把 `role:"tool"` 结果发回 shim，shim 转成 Comate 的 `toolUseResults`，继续下一轮。
+dsh 收到工具调用后在本地执行，再把结果作为工具结果发回去（插件形态是 `tool` 消息，桥接器形态是 `role:"tool"`），内核转成 Comate 的 `toolUseResults` 继续下一轮。
 
 ---
 
 ## 环境要求
 
-- Node.js **>= 20**（使用内置 `fetch`）
+- Node.js **>= 20**（桥接器；插件形态要求 >= 22，与 dsh 一致）
 - 已安装并登录的 Comate 私有部署客户端（用于获取 `apiHost` 和 `license`）
-- DeepSeek Harness（dsh）桌面端或 CLI
+- DeepSeek Harness（dsh）桌面端或 CLI（插件形态要求 `>= 0.2.0-rc.2`）
 
 ---
 
-## 快速开始
+## 快速开始（HTTP 桥接器）
 
 ### 1. 克隆仓库
 
@@ -195,7 +296,9 @@ Api Base Url: http://192.168.x.x:9359
 
 ---
 
-## 接入 dsh
+## 接入 dsh（HTTP 桥接器形态）
+
+> 插件形态不需要这一节。只有当你选择让 dsh 通过 OpenAI 兼容端口访问 shim 时，才需要下面的 provider 配置。
 
 ### 配置文件位置
 
@@ -292,14 +395,15 @@ curl http://127.0.0.1:8790/v1/models
 
 ## 配置参考
 
-`config.json` 字段：
+插件行（profile patch 里的 `- id: comate`）与桥接器的 `config.json` 使用同一套字段名，差别只有三行：插件形态不需要 `port` / `host` / `authToken`（没有 HTTP 监听），另外多了 `displayName` 与三个会话存储字段。
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `port` | `8790` | shim 监听端口 |
-| `host` | `127.0.0.1` | 监听地址，建议保持本地 |
+| `port` | `8790` | shim 监听端口（**仅桥接器**） |
+| `host` | `127.0.0.1` | 监听地址（**仅桥接器**） |
+| `authToken` | 空 | 设置后 `/v1/*` 需要 `Authorization: Bearer <token>`（**仅桥接器**） |
 | `apiHost` | 必填 | Comate 私有部署地址 |
-| `license` | 必填 | Comate license |
+| `license` | 必填 | Comate license（可用 `COMATE_LICENSE` 或 `~/.comate/cli-login.json`） |
 | `username` | 同 license | Comate 用户名 / 标识 |
 | `device` | 自动生成 | 设备标识 |
 | `ide` | `zulucli` | 上报的 IDE 类型 |
@@ -309,11 +413,14 @@ curl http://127.0.0.1:8790/v1/models
 | `agentName` | `Agent` | Comate Agent 名称 |
 | `modelKey` | `auto` | `model: "auto"` 时实际使用的 modelKey |
 | `workspacePath` | 当前目录 | 默认工作区；dsh 运行时会自动覆盖 |
-| `authToken` | 空 | 设置后 `/v1/*` 需要 `Authorization: Bearer <token>` |
-| `emitReasoning` | `false` | 是否输出 `reasoning_content` |
+| `displayName` | `Comate` | 模型选择器里显示的提供方名称（**仅插件**） |
+| `sessionTtlMs` | `3600000` | Comate 会话映射的存活时间（**仅插件**） |
+| `maxSessions` | `200` | 最多保留多少个会话映射（**仅插件**） |
+| `sessionsFile` | `~/.dsh/dsh-connect-baiducomate/sessions.json` | 会话映射文件（**仅插件**） |
+| `emitReasoning` | `false` | 是否输出推理块 |
 | `overrideSystemPrompt` | `true` | 用 dsh 系统提示覆盖 Comate |
 | `forwardSystemPrompt` | `false` | 非覆盖模式下转发 system prompt |
-| `forwardContext` | `true` | 转发 CLAUDE.md 等项目规则 |
+| `forwardContext` | `true` | 转发工作区规则等上下文 |
 | `forwardTools` | `true` | 转发 dsh 独有工具目录 |
 | `forwardAllTools` | `false` | 连重叠工具也一起转发 |
 | `forwardToolLimit` | `20` | 最多转发多少个工具 |
@@ -323,7 +430,7 @@ curl http://127.0.0.1:8790/v1/models
 | `toolMap` | 内置 | Comate 工具名 → dsh 工具名 |
 | `argumentAliases` | `{}` | 额外的参数名映射 |
 
-环境变量优先级高于配置文件：
+环境变量优先级高于配置文件（两种形态都适用）：
 
 ```
 COMATE_PORT
@@ -451,12 +558,18 @@ dsh 独有的工具（MCP、`job_*`、`session_*`、`terminal_*`、`schedule_*` 
 
 - TTL：1 小时
 - 最多 200 条
-- 删除 `sessions.json` 可强制重置所有会话
-- shim 重启后会加载该文件；如果映射丢失，会用 dsh 历史回放兜底
+- 删除该文件可强制重置所有会话
+- 进程/插件重启后会加载该文件；如果映射丢失，会用 dsh 历史回放兜底
+- 桥接器的文件是仓库里的 `sessions.json`；插件的是 `~/.dsh/dsh-connect-baiducomate/sessions.json`（可用 `sessionsFile` 改）
+- 插件形态下键是 `dsh sessionId::model`，也就是说同一个 dsh 会话稳定复用同一个 Comate conversation/task
 
 ---
 
 ## 常见问题
+
+### `DUPLICATE_ADAPTER`: an adapter for provider "comate" is already registered
+
+插件路由和旧的 HTTP 方案撞了。profile 的 patch 里如果还有 `llm-pi-ai` 行的 `providers.comate`（指向 `127.0.0.1:8790`），删掉它再重启 dsh。`agent-default-model` 里的 `provider: comate` 不需要改。
 
 ### `MISSING_CREDENTIAL` / 401 / 403
 
@@ -525,19 +638,30 @@ Comate 调用了 dsh 没有的工具。模型会根据错误自行调整；也�
 
 ```
 .
-├── comate-shim.js          # 入口：装配与启动
-├── config.example.json     # 配置模板
+├── lib/                    # dsh 插件（原生 LLM 适配器）
+│   ├── index.mjs           # cordis 入口：name / inject / apply，注册 comate 路由
+│   ├── adapter.mjs         # LlmAdapter 实现：stream / listModels / resolveModel
+│   ├── round.mjs           # dsh 消息块 → 共享内核的轮次结构
+│   └── config.mjs          # 插件行配置解析（失败不退出进程）
+├── cordis.patch.yml        # bundle patch：插入 comate 插件行
+├── comate-shim.js          # HTTP 桥接器入口：装配与启动
+├── config.example.json     # 桥接器配置模板
 ├── build-launcher.ps1      # 编译 Windows 启动器
 ├── launcher/
 │   └── start-shim.cs       # 启动器源码
 ├── start-shim.exe          # 本地生成，已被 gitignore
 ├── package.json
 ├── scripts/
-│   └── check.js            # 语法检查
-└── src/
+│   └── check.js            # 语法检查（src/ + lib/）
+├── test/
+│   ├── adapter.test.mjs    # 离线：适配器转换与流翻译
+│   ├── plugin-entry.test.mjs # 离线：插件入口注册（dsh-llm 打桩）
+│   ├── fixtures/
+│   └── live-smoke.mjs      # 联网：真打一次 Comate
+└── src/                    # 两种形态共用内核
     ├── constants.js        # 常量
     ├── logger.js           # 结构化日志
-    ├── config.js           # 配置加载与校验
+    ├── config.js           # 桥接器配置加载与校验
     ├── sessions.js         # 会话持久化
     ├── upstream.js         # Comate 协议客户端
     ├── messages.js         # 消息解析与历史回放
@@ -550,22 +674,24 @@ Comate 调用了 dsh 没有的工具。模型会根据错误自行调整；也�
 
 ## 开发
 
-语法检查：
+静态检查与离线测试：
 
 ```bash
 npm run check
+npm test
 ```
 
-手动冒烟：
+联网冒烟（会消耗 Comate 额度，走真实 Comate 会话）：
+
+```bash
+npm run test:live
+```
+
+桥接器形态的手动冒烟：
 
 ```bash
 curl http://127.0.0.1:8790/health
 curl http://127.0.0.1:8790/v1/models
-```
-
-发送一条测试请求（会消耗 Comate 额度）：
-
-```bash
 curl http://127.0.0.1:8790/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model":"auto","stream":false,"messages":[{"role":"user","content":"Reply with OK"}]}'

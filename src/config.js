@@ -101,4 +101,4 @@ function fail(message) {
   process.exit(1);
 }
 
-module.exports = { loadConfig };
+module.exports = { loadConfig, readCliLicense };

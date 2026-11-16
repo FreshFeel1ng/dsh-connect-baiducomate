@@ -208,6 +208,9 @@ function completionPayload({ model, state, toolCalls, finishReason, emitReasonin
 
 module.exports = {
   buildExecuteBody,
+  uploadBaseInfo,
+  sysInfo,
+  appendReminder,
   parseToolArguments,
   isToolError,
   usageFrom,

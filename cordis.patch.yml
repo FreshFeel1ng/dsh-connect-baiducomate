@@ -1,0 +1,26 @@
+# dsh-connect-baiducomate — bundle patch layer
+#
+# This package mounts ONE plugin row: a native dsh LLM route named `comate`,
+# served by a Baidu Comate (文心快码) private deployment. Nothing else is added
+# to the composition, and no HTTP listener is opened.
+#
+# The row ships without deployment values on purpose: an `apiHost` baked into a
+# published package would be wrong for everybody. Fill them in your profile's own
+# patch layer ($DSH_HOME/profiles/<profile>/cordis.patch.yml), which is applied
+# after this layer and wins per row:
+#
+#   - id: comate
+#     config:
+#       apiHost: http://comate.example.internal:9359
+#       license: <your-license-uuid>   # or leave unset and export COMATE_LICENSE
+#       workspacePath: C:\work\repo
+#
+# A patch replaces a row's whole `config`, so restate every key you need. Every
+# field, its default, and the environment overrides are documented in README.md.
+#
+# MIGRATION: a route belongs to exactly one adapter. If the profile still names a
+# `comate` provider under the `llm-pi-ai` row (the old HTTP-shim setup), delete
+# that provider entry first, otherwise registration fails with DUPLICATE_ADAPTER.
+- insert:
+    - id: comate
+      name: dsh-connect-baiducomate
