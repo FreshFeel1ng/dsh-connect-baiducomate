@@ -266,6 +266,17 @@ test('round reading keeps producer context out of the user query', () => {
   assert.equal(sessionKeyFor({ model: 'auto', sessionId: 's-1', messages }, round.systemPrompt), 's-1::auto');
 });
 
+test('an auxiliary title call gets its own task, never the agent session', () => {
+  const agentMessages = [{ id: 'u1', role: 'user', source: { kind: 'user' }, content: text('add a remark field') }];
+  const titleMessages = [{ id: 'u1', role: 'user', source: { kind: 'dsh-session-title-llm' }, content: text('Generate the session title') }];
+  const agentKey = sessionKeyFor({ model: 'auto', sessionId: 's-1', messages: agentMessages }, 'sys');
+  const titleKey = sessionKeyFor({ model: 'auto', sessionId: 's-1', messages: titleMessages }, 'title sys');
+
+  assert.equal(agentKey, 's-1::auto');
+  assert.notEqual(titleKey, agentKey);
+  assert.equal(titleKey, sessionKeyFor({ model: 'auto', sessionId: 's-1', messages: titleMessages }, 'title sys'));
+});
+
 test('images ride only with the newest real user turn', () => {
   const ref = { attachmentId: 'a1', mediaType: 'image/png', bytes: 4, width: 1, height: 1 };
   const withImage = [
